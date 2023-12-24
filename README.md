@@ -1,0 +1,1 @@
+# trash_0001_mysql_shell_sample
