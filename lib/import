@@ -1,0 +1,76 @@
+#!/bin/bash
+
+set -eu
+
+. ./common
+
+if [[ ! -f "${BASEDIR}/codes" ]]; then
+    echo "対象コードを指定してください。"
+    exit 1
+fi
+
+# 前回実行分削除
+find "${SQLDIR}" -type f -name "*.sql" -exec rm -f {} + || { std_err "${FAILD}" "${job_name}に失敗しました。"; return 1;}
+find "${CSVDIR}" -type f -name "*.csv" -exec rm -f {} + || { std_err "${FAILD}" "${job_name}に失敗しました。"; return 1;}
+find "${CNTDIR}" -type f -name "*.txt" -exec rm -f {} + || { std_err "${FAILD}" "${job_name}に失敗しました。"; return 1;}
+find "${DUMPDIR}" -type f -name "*.dump" -exec rm -f {} + || { std_err "${FAILD}" "${job_name}に失敗しました。"; return 1;}
+
+job_name="sqlファイル生成";
+std_out "${start}" "${job_name}"
+echo "${TABLES[@]}" | {
+    while IFS= read -r table_name; do
+        printf '%-20s %s\n' "${table_name}" "SQLファイル作成中......"
+        echo "SELECT * FROM ${table_name} WHERE COLUMN_NAME IN (${CODES}) INTO OUTFILE '${OUTFILE_CSV}/${table_name}.csv' ${OUT_CONDITION};" > "${SQLDIR}/${table_name}.sql"
+        STR="${STR} SELECT '${table_name}' as table_name, COUNT(*) AS table_rows FROM ${table_name} WHERE COLUMN_NAME IN (${CODES}) UNION ALL"
+        tput cuu 1; tput dl 1;
+        printf '%-20s %s\n' "${table_name}" "SQLファイル作成完了"
+        tput cuu 1; tput dl 1;
+    done
+} || { std_err "${FAILD}" "${job_name}に失敗しました。"; return 2;}
+std_out "${END}" "${job_name}"
+
+job_name="インポート前件数確認開始"
+std_out "${start}" "${job_name}"
+echo "${STR% UNION ALL} INTO OUTFILE '${PRE_IMPORT_TABLE_ROWS}' FIELDS TERMINATED BY ','" > "${PRE_IMPORT_SQL}"
+$(cat "${PRE_IMPORT_SQL}" | mysql "${DB}") || { std_err "${FAILD}" "${job_name}に失敗しました。"; return 11;}
+std_out "${END}" "${job_name}"
+
+job_name="インポート前dump出力開始"
+std_out "${start}" "${job_name}"
+mysql_dump "pre_import" || { std_err "${FAILD}" "${job_name}に失敗しました。"; return 21;}
+std_out "${END}" "${job_name}"
+
+job_name="バックスラッシュ追加"
+std_out "${start}" "${job_name}"
+perl -pi -e 's/\\/\\\\/g' "${IMPORT_SOURCE}/*.csv"
+tput cuu 1; tput dl 1;
+std_out "${END}" "${job_name}"
+
+std_out "${START}" "CSVインポート"
+std_out "${start}" "${job_name}"
+mysqlimport "${DB}" \
+    --local ${IMPORT_SOURCE}/* \
+    --fields-terminated-by ',' \
+    --fields-optionally-enclosed-by '"' \
+    --fields-escaped-by '\\' \
+    --lines-terminated-by '\r\n' \
+    --ignore-lines 1 || { std_err "${FAILD}" "${job_name}に失敗しました。"; return 9;}
+std_out "${END}" "${job_name}"
+
+job_name="インポート後件数確認"
+std_out "${start}" "${job_name}"
+echo "${STR% UNION ALL} INTO OUTFILE '${POST_IMPORT_TABLE_ROWS}' FIELDS TERMINATED BY ','" > "${POST_IMPORT_SQL}"
+$(cat "${POST_IMPORT_SQL}" | mysql "${DB}") || { std_err "${FAILD}" "${job_name}に失敗しました。"; return 12;}
+std_out "${END}" "${job_name}"
+
+job_name="インポート後dump出力"
+std_out "${start}" "${job_name}"
+mysql_dump "post_import" || { std_err "${FAILD}" "${job_name}に失敗しました。"; return 22;}
+std_out "${END}" "${job_name}"
+
+job_name="dump圧縮"
+std_out "${start}" "${job_name}"
+tar -C "${IMPORT}" "dump" -zcf "${IMPORT}/dump_$(date '+%Y%m%d').tar.gz" || { std_err "${FAILD}" "${job_name}に失敗しました。"; return 3;}
+std_out "${END}" "${job_name}"
+
+exit 0
