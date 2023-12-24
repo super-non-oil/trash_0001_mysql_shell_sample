@@ -1,0 +1,92 @@
+#!/bin/bash
+
+set -eu
+
+. ./common
+
+if [[ ! -f "${BASEDIR}/codes" ]]; then
+    echo "対象コードを指定してください。"
+    exit 1
+fi
+
+# 前回実行分削除
+find "${SQLDIR}" -type f -name "*.sql" -exec rm -f {} + || { std_err "${FAILD}" "${job_name}に失敗しました。"; return 1;}
+find "${CSVDIR}" -type f -name "*.csv" -exec rm -f {} + || { std_err "${FAILD}" "${job_name}に失敗しました。"; return 1;}
+find "${CNTDIR}" -type f -name "*.txt" -exec rm -f {} + || { std_err "${FAILD}" "${job_name}に失敗しました。"; return 1;}
+find "${DUMPDIR}" -type f -name "*.dump" -exec rm -f {} + || { std_err "${FAILD}" "${job_name}に失敗しました。"; return 1;}
+
+job_name="sqlファイル生成";
+std_out "${start}" "${job_name}"
+echo "${TABLES[@]}" | {
+    while IFS= read -r table_name; do
+        # INFORMATION_SCHEMAからカラム名を取得（csvヘッダー用）
+        readonly columns="$(mysql "${DB}" \
+                    -sN \
+                    -e "SELECT GROUP_CONCAT(concat(\"'\", COLUMN_NAME, \"'\")) \
+                        FROM INFORMATION_SCHEMA.COLUMNS \
+                        WHERE TABLE_SCHEMA = '${DB}' \
+                        AND TABLE_NAME = '${table_name}'"\
+                    )" || { std_err "${FAILD}" "テーブル:${table_name}のカラム名取得に失敗しました。"; exit 2; }
+        echo "SELECT ${colmns} \
+                UNION \
+                SELECT * FROM ${table_name} \
+                WHERE CODE IN (${CODES}) \
+                order by id DESC \
+                INTO OUTFILE '${OUTFILE_CSV}/${table_name}.csv' ${OUT_CONDITION};"\
+                 > "${SQLDIR}/${table_name}.sql"
+        echo "DELETE FROM ${table_name} WHERE CODE IN (${CODES});" > "${SQLDIR}/${table_name}.sql"
+        tput cuu 1; tput dl 1;
+        printf '%-20s %s\n' "${table_name}" "SQLファイル作成完了"
+        tput cuu 1; tput dl 1;
+    done
+} || { std_err "${FAILD}" "${job_name}に失敗しました。"; return 2;}
+std_out "${END}" "${job_name}"
+
+job_name="削除前件数確認"
+std_out "${start}" "${job_name}"
+echo "${STR% UNION ALL} INTO OUTFILE '${PRE_DELETE_TABLE_ROWS}' FIELDS TERMINATED BY ','" > "${PRE_DELETE_SQL}"
+$(cat "${PRE_DELETE_SQL}" | mysql "${DB}") || { std_err "${FAILD}" "${job_name}に失敗しました。"; return 11;}
+if [[ $(cat "${PRE_DELETE_TABLE_ROWS}" | awk 'BEGIN{FS=","} {sum += $2} END {print sum}') -eq 0 ]]; then
+    std_out "※" "削除対象がありません。"
+    exit 0
+fi
+std_out "${END}" "${job_name}"
+
+job_name="削除前dump出力"
+std_out "${start}" "${job_name}"
+mysql_dump "pre_delete" || { std_err "${FAILD}" "${job_name}に失敗しました。"; return 21;}
+std_out "${END}" "${job_name}"
+
+job_name="データ削除"
+cat "${PRE_DELETE_TABLE_ROWS}" | awk 1 | while IFS="," read -r table_name count; do
+        # 件数0以上のテーブルを削除
+    if [[ "${count}" -ne 0 ]]; then
+        printf '%-20s %s\n' "${table_name}" "削除中......"
+        cat "${SQLDIR}/${table_name}.sql" | mysql "${DB}"
+        if [[ "${?}" -eq 0 ]]; then
+            tput cuu 1; tput dl 1;
+            printf "%-20s %s\n" "${table_name}" "削除完了 [ $(date '+%Y/%m/%d %H:%M:%S') ]"
+        else
+            std_out "${WARN}" "table_name:${table_name}の削除に失敗しました。"
+            continue
+        fi
+    fi
+done || { std_err "${FAILD}" "${job_name}に失敗しました。"; exit 1; }
+
+job_name="削除後件数確認"
+std_out "${start}" "${job_name}"
+echo "${STR% UNION ALL} INTO OUTFILE '${POST_DELETE_TABLE_ROWS}' FIELDS TERMINATED BY ','" > "${POST_DELETE_SQL}"
+$(cat "${POST_DELETE_SQL}" | mysql "${DB}") || { std_err "${FAILD}" "${job_name}に失敗しました。"; return 12;}
+std_out "${END}" "${job_name}"
+
+job_name="削除後dump出力"
+std_out "${start}" "${job_name}"
+mysql_dump "post_delete" || { std_err "${FAILD}" "${job_name}に失敗しました。"; return 22;}
+std_out "${END}" "${job_name}"
+
+job_name="dump圧縮"
+std_out "${start}" "${job_name}"
+tar -C "${DELETE}" "dump" -zcf "${DELETE}/dump_$(date '+%Y%m%d').tar.gz" || { std_err "${FAILD}" "${job_name}に失敗しました。"; return 3;}
+std_out "${END}" "${job_name}"
+
+exit 0

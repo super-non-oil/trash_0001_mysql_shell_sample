@@ -1,0 +1,55 @@
+#!/bin/bash
+
+readonly DB="SCHEMA.DATABASE_NAME"
+readonly BASEDIR="/var/work/mysql"
+readonly TMPDIR="${BASEDIR}/tmp"
+readonly DATADIR="${BASEDIR}/data"
+readonly SQLDIR="${BASEDIR}/sql"
+readonly CSVDIR="${BASEDIR}/csv"
+readonly DUMPDIR="${BASEDIR}/dump"
+readonly LOGDIR="${TMPDIR}/log"
+readonly STD_OUT_LOG="${LOGDIR}/std_out.log"
+readonly STD_ERR_LOG="${LOGDIR}/std_err.log"
+readonly IMPORT_SOURCE="${DATADIR}/source"
+
+readonly MYSQL_FILES="/var/lib/mysql-files"
+readonly OUTFILE_CSV="${MYSQL_FILES}/csv"
+readonly OUTFILE_SQL="${MYSQL_FILES}/sql"
+readonly PRE_IMPORT_SQL="${OUTFILE_SQL}/pre_import_table_rows.sql"
+readonly PRE_IMPORT_TABLE_ROWS="${OUTFILE_TMP}/pre_import_table_rows.txt"
+readonly POST_IMPORT_SQL="${OUTFILE_SQL}/post_import_table_rows.sql"
+readonly POST_IMPORT_TABLE_ROWS="${OUTFILE_TMP}/post_import_table_rows.txt"
+readonly PRE_DELETE_SQL="${OUTFILE_SQL}/pre_delete_table_rows.sql"
+readonly PRE_DELETE_TABLE_ROWS="${OUTFILE_TMP}/pre_delete_table_rows.txt"
+readonly POST_DELETE_SQL="${OUTFILE_SQL}/post_delete_table_rows.sql"
+readonly POST_DELETE_TABLE_ROWS="${OUTFILE_TMP}/post_delete_table_rows.txt"
+
+readonly TABLES=$(cat "${BASEDIR}/tables")
+readonly CODES=$(cat "${BASEDIR}/codes" | perl -p -e "s/^/'/g" | perl -p -e "s/\n$/', /g" | perl -p -e "s/, $//g")
+readonly OUTFILE_CONDITION="fields terminated by ',' enclosed by '\"' escaped by '' lines terminated by '\r\n'"
+
+readonly INFO="INFO"
+readonly WARN="WARN"
+readonly DEBUG="DEBUG"
+readonly ERROR="ERROP"
+
+readonly START="START"
+readonly END="END"
+readonly FAILD="EXECUTE FAILURE!"
+
+std_out() {
+    printf "%-5s $(date '+%y/%m/%d %H:%M:%S') ${BASH_SOURCE[1]}:${BASH_LINENO[0]} %-5s %-40s\n" "${INFO}" "${1}" "${2}" | tee -a "${STD_OUT_LOG}"
+}
+
+std_err() {
+    printf "%-5s $(date '+%y/%m/%d %H:%M:%S') ${BASH_SOURCE[1]}:${BASH_LINENO[0]} %-5s %-40s\n" "${ERROR}" "${1}" "${2}" | tee -a "${STD_ERR_LOG}"
+}
+
+mysql_dump() {
+    mysqlpump \
+    --single-transaction \
+    --add-drop-database \
+    --add-drop-table \
+    --skip-watch-progress "${DB}" \
+    > "${DUMPDIR}/${DB}_${1}_$(date '+%Y%m%d').dump"
+}
